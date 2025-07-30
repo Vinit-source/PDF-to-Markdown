@@ -1,0 +1,49 @@
+{
+  "name": "pdf-to-markdown",
+  "version": "1.0.0",
+  "description": "PDF to Markdown Converter with LLM Enhancement",
+  "type": "mcp-server",
+  "main": "mcp_server.py",
+  "scripts": {
+    "start": "python mcp_server.py",
+    "test": "python example_usage.py",
+    "convert": "python pdf_to_markdown.py"
+  },
+  "mcp": {
+    "server": {
+      "command": "python",
+      "args": ["mcp_server.py"],
+      "env": {}
+    },
+    "tools": [
+      {
+        "name": "convert_pdf_to_markdown",
+        "description": "Convert PDF to Markdown with smart structure detection"
+      },
+      {
+        "name": "convert_pdf_from_base64", 
+        "description": "Convert base64-encoded PDF to Markdown"
+      },
+      {
+        "name": "analyze_pdf_structure",
+        "description": "Analyze PDF structure without full conversion"
+      }
+    ]
+  },
+  "capabilities": {
+    "llm_enhancement": true,
+    "image_extraction": true,
+    "structure_analysis": true,
+    "fallback_processing": true
+  },
+  "requirements": {
+    "python": ">=3.8",
+    "packages": [
+      "pymupdf>=1.23.0",
+      "Pillow>=10.0.0", 
+      "requests>=2.31.0",
+      "mcp>=1.0.0",
+      "pydantic>=2.0.0"
+    ]
+  }
+}

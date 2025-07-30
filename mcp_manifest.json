@@ -1,0 +1,125 @@
+{
+  "name": "pdf-to-markdown",
+  "version": "1.0.0",
+  "description": "PDF to Markdown Converter with LLM Enhancement",
+  "author": "AI Assistant",
+  "license": "MIT",
+  "mcp": {
+    "version": "2024-11-05",
+    "capabilities": {
+      "tools": {
+        "list_changed": false
+      },
+      "resources": {
+        "subscribe": false,
+        "list_changed": false
+      },
+      "prompts": {
+        "list_changed": false
+      },
+      "logging": {
+        "level": "info"
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "convert_pdf_to_markdown",
+      "description": "Convert a PDF file to Markdown format with smart structure detection using LLM analysis",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "pdf_path": {
+            "type": "string",
+            "description": "Path to the PDF file to convert"
+          },
+          "output_dir": {
+            "type": "string",
+            "description": "Output directory for the markdown file and images (optional)"
+          },
+          "output_name": {
+            "type": "string", 
+            "description": "Name for the output markdown file (optional)"
+          },
+          "extract_images": {
+            "type": "boolean",
+            "description": "Whether to extract images from the PDF (default: true)"
+          },
+          "llm_api_url": {
+            "type": "string",
+            "description": "LLM API URL for enhanced structure detection (optional)"
+          },
+          "llm_api_key": {
+            "type": "string",
+            "description": "LLM API key for authentication (optional)"
+          }
+        },
+        "required": ["pdf_path"]
+      }
+    },
+    {
+      "name": "convert_pdf_from_base64",
+      "description": "Convert a base64-encoded PDF to Markdown format",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "pdf_base64": {
+            "type": "string",
+            "description": "Base64-encoded PDF content"
+          },
+          "filename": {
+            "type": "string",
+            "description": "Original filename of the PDF (for naming output)"
+          },
+          "output_dir": {
+            "type": "string",
+            "description": "Output directory for the markdown file and images (optional)"
+          },
+          "extract_images": {
+            "type": "boolean",
+            "description": "Whether to extract images from the PDF (default: true)"
+          },
+          "llm_api_url": {
+            "type": "string",
+            "description": "LLM API URL for enhanced structure detection (optional)"
+          },
+          "llm_api_key": {
+            "type": "string",
+            "description": "LLM API key for authentication (optional)"
+          }
+        },
+        "required": ["pdf_base64", "filename"]
+      }
+    },
+    {
+      "name": "analyze_pdf_structure",
+      "description": "Analyze PDF structure and return document hierarchy without full conversion",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "pdf_path": {
+            "type": "string",
+            "description": "Path to the PDF file to analyze"
+          },
+          "llm_api_url": {
+            "type": "string",
+            "description": "LLM API URL for enhanced structure detection (optional)"
+          },
+          "llm_api_key": {
+            "type": "string",
+            "description": "LLM API key for authentication (optional)"
+          }
+        },
+        "required": ["pdf_path"]
+      }
+    }
+  ],
+  "resources": [
+    {
+      "uri": "file://converter-info",
+      "name": "PDF to Markdown Converter Information",
+      "description": "Information about the PDF to Markdown converter capabilities",
+      "mimeType": "text/plain"
+    }
+  ]
+}
