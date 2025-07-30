@@ -128,6 +128,11 @@ Please provide your analysis as a JSON object:
     
     def _interactive_analysis_request(self, prompt: str, text_blocks: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Handle interactive analysis request with MCP client."""
+        # Check if we're in MCP mode (non-interactive)
+        if not self.interactive_mode:
+            print("\n🤖 MCP Mode: Using automated analysis...")
+            return self._fallback_structure_analysis(text_blocks)
+        
         print("\n" + "="*80)
         print("🤖 MCP CLIENT ANALYSIS REQUEST")
         print("="*80)
@@ -229,12 +234,27 @@ Please provide your analysis as a JSON object:
         structure = []
         sections = []
         
+        # First pass: calculate average left margin for text alignment analysis
+        left_margins = []
+        for block in text_blocks:
+            if block["type"] == "text":
+                left_margins.append(block["bbox"][0])  # x0 coordinate
+        
+        # Calculate reference points for alignment
+        avg_left_margin = sum(left_margins) / len(left_margins) if left_margins else 0
+        indented_threshold = avg_left_margin  # Threshold for detecting indentation
+        
+        # Second pass: classify blocks with positional awareness
         for i, block in enumerate(text_blocks):
             if block["type"] == "text":
-                # Enhanced heuristic based on font size and formatting
+                # Enhanced heuristic based on font size, formatting and position
                 avg_font_size = self._get_average_font_size(block)
                 is_bold = self._is_block_bold(block)
                 text = self._extract_block_text(block)
+                
+                # Get position data
+                x0, y0, x1, y1 = block["bbox"]
+                is_indented = x0 > indented_threshold
                 
                 # Classification logic
                 if avg_font_size >= 20 or (avg_font_size >= 16 and is_bold):
@@ -246,10 +266,19 @@ Please provide your analysis as a JSON object:
                 elif avg_font_size >= 14 or (avg_font_size >= 12 and is_bold):
                     block_type = "heading3"
                 else:
-                    # Check if it looks like a list item
-                    if re.match(r'^\s*[\u2022\u2023\u25E6\u2043\u2219\*\-\+]\s', text) or \
+                    # Check if it looks like a list item by position AND content
+                    if is_indented or re.match(r'^\s*[\u2022\u2023\u25E6\u2043\u2219\*\-\+]\s', text) or \
                        re.match(r'^\s*\d+\.?\s', text):
-                        block_type = "list_item"
+                        # Look at previous block to confirm list context
+                        if i > 0 and structure and structure[-1]["type"] == "list_item":
+                            block_type = "list_item"  # Continuation of a list
+                        elif is_indented and len(text.strip()) < 100:
+                            block_type = "list_item"  # New indented item
+                        elif re.match(r'^\s*[\u2022\u2023\u25E6\u2043\u2219\*\-\+]\s', text) or \
+                             re.match(r'^\s*\d+\.?\s', text):
+                            block_type = "list_item"  # Explicit list marker
+                        else:
+                            block_type = "paragraph"
                     elif len(text.strip()) < 50 and ':' in text:
                         block_type = "metadata"
                     else:
@@ -259,7 +288,7 @@ Please provide your analysis as a JSON object:
                     "block_id": i,
                     "type": block_type,
                     "confidence": 0.7,
-                    "reasoning": f"Heuristic: font_size={avg_font_size:.1f}, bold={is_bold}"
+                    "reasoning": f"Heuristic: font_size={avg_font_size:.1f}, bold={is_bold}, position=[{x0:.1f}, {y0:.1f}]"
                 })
         
         return {
@@ -367,9 +396,12 @@ class PDFToMarkdownConverter:
             self.images_dir.mkdir(exist_ok=True)
     
     def extract_text_with_formatting(self, page) -> List[Dict[str, Any]]:
-        """Extract text with detailed formatting information."""
+        """Extract text with detailed formatting information including links."""
         blocks = []
         text_dict = page.get_text("dict")
+        
+        # Extract all links from the page
+        page_links = self.extract_links_from_page(page)
         
         for block in text_dict["blocks"]:
             if "lines" in block:  # Text block
@@ -386,13 +418,17 @@ class PDFToMarkdownConverter:
                     }
                     
                     for span in line["spans"]:
+                        # Check if this text span overlaps with any links
+                        overlapping_link = self.check_text_link_overlap(span["bbox"], page_links)
+                        
                         span_info = {
                             "text": span["text"],
                             "font": span["font"],
                             "size": span["size"],
                             "flags": span["flags"],  # Bold, italic, etc.
                             "color": span["color"],
-                            "bbox": span["bbox"]
+                            "bbox": span["bbox"],
+                            "link": overlapping_link  # Add link information
                         }
                         line_info["spans"].append(span_info)
                     
@@ -407,6 +443,96 @@ class PDFToMarkdownConverter:
                 })
         
         return blocks
+    
+    def extract_links_from_page(self, page) -> List[Dict[str, Any]]:
+        """Extract all links from a PDF page."""
+        links = []
+        
+        try:
+            # Get all links on the page
+            page_links = page.get_links()
+            
+            for link in page_links:
+                link_info = {
+                    "kind": link.get("kind", 0),  # Link type
+                    "from": link.get("from"),     # Source rectangle
+                    "to": link.get("to"),         # Destination (for internal links)
+                    "uri": link.get("uri", ""),   # URL (for external links)
+                    "page": link.get("page", -1), # Target page (for internal links)
+                    "zoom": link.get("zoom", 0),  # Zoom level
+                }
+                
+                # Determine link type and format URL
+                if link_info["uri"]:
+                    # External URL
+                    link_info["url"] = link_info["uri"]
+                    link_info["type"] = "external"
+                elif link_info["page"] >= 0:
+                    # Internal page link
+                    link_info["url"] = f"#page-{link_info['page'] + 1}"
+                    link_info["type"] = "internal"
+                else:
+                    # Other internal reference
+                    link_info["url"] = "#internal-ref"
+                    link_info["type"] = "internal"
+                
+                links.append(link_info)
+                
+        except Exception as e:
+            print(f"Warning: Could not extract links from page: {e}")
+        
+        return links
+    
+    def check_text_link_overlap(self, text_bbox: Tuple[float, float, float, float], 
+                               links: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Check if a text bounding box overlaps with any link areas."""
+        if not links:
+            return None
+        
+        text_x0, text_y0, text_x1, text_y1 = text_bbox
+        
+        for link in links:
+            if not link.get("from"):
+                continue
+                
+            link_x0, link_y0, link_x1, link_y1 = link["from"]
+            
+            # Check for overlap using intersection logic
+            overlap_x = max(0, min(text_x1, link_x1) - max(text_x0, link_x0))
+            overlap_y = max(0, min(text_y1, link_y1) - max(text_y0, link_y0))
+            overlap_area = overlap_x * overlap_y
+            
+            if overlap_area > 0:
+                # Calculate overlap ratio
+                text_area = (text_x1 - text_x0) * (text_y1 - text_y0)
+                overlap_ratio = overlap_area / text_area if text_area > 0 else 0
+                
+                # Return link if there's significant overlap (>50%)
+                if overlap_ratio > 0.5:
+                    return {
+                        "url": link["url"],
+                        "type": link["type"],
+                        "overlap_ratio": overlap_ratio
+                    }
+        
+        return None
+    
+    def format_linked_text(self, text: str, link_info: Optional[Dict[str, Any]]) -> str:
+        """Format text with markdown link syntax if it has an associated link."""
+        if not link_info or not text.strip():
+            return text
+        
+        # Clean up the text
+        clean_text = text.strip()
+        url = link_info["url"]
+        
+        # Format as markdown link
+        if link_info["type"] == "external":
+            return f"[{clean_text}]({url})"
+        elif link_info["type"] == "internal":
+            return f"[{clean_text}]({url})"
+        else:
+            return clean_text
     
     def extract_images(self, page, page_num: int) -> List[str]:
         """Extract images from a page and save them."""
@@ -463,7 +589,7 @@ class PDFToMarkdownConverter:
     def convert_blocks_to_markdown(self, text_blocks: List[Dict[str, Any]], 
                                   structure: Dict[str, Any], 
                                   images: List[str]) -> str:
-        """Convert analyzed blocks to markdown format."""
+        """Convert analyzed blocks to markdown format with link preservation."""
         markdown_lines = []
         image_index = 0
         
@@ -473,30 +599,37 @@ class PDFToMarkdownConverter:
             if block["type"] == "text":
                 block_structure = structure_map.get(i, {"type": "paragraph"})
                 block_type = block_structure["type"]
-                text = self._extract_block_text(block)
                 
-                if not text.strip():
+                # Extract text with link formatting
+                formatted_text = self._extract_block_text_with_links(block)
+                
+                if not formatted_text.strip():
                     continue
                 
                 # Convert based on identified structure
                 if block_type == "title":
-                    markdown_lines.append(f"# {text.strip()}")
+                    markdown_lines.append(f"# {formatted_text.strip()}")
                 elif block_type == "heading1":
-                    markdown_lines.append(f"# {text.strip()}")
+                    markdown_lines.append(f"# {formatted_text.strip()}")
                 elif block_type == "heading2":
-                    markdown_lines.append(f"## {text.strip()}")
+                    markdown_lines.append(f"## {formatted_text.strip()}")
                 elif block_type == "heading3":
-                    markdown_lines.append(f"### {text.strip()}")
+                    markdown_lines.append(f"### {formatted_text.strip()}")
                 elif block_type == "heading4":
-                    markdown_lines.append(f"#### {text.strip()}")
+                    markdown_lines.append(f"#### {formatted_text.strip()}")
                 elif block_type == "list_item":
-                    # Clean up list formatting
-                    clean_text = re.sub(r'^\s*[\u2022\u2023\u25E6\u2043\u2219\*\-\+]\s*', '- ', text.strip())
+# Clean up list formatting while preserving links
+                    clean_text = re.sub(r'^\s*[\u2022\u2023\u25E6\u2043\u2219\*\-\+]\s*', '- ', formatted_text.strip())
                     clean_text = re.sub(r'^\s*\d+\.?\s*', '1. ', clean_text)
+
+                    # If the line does not start with a Markdown list marker, add '- '
+                    # Check for ordered list (numbered) and unordered list (bullets)
+                    if not (re.match(r'^1\. ', clean_text) or re.match(r'^\d+\.\s', clean_text)):
+                        clean_text = '- ' + clean_text
                     markdown_lines.append(clean_text)
                 else:
                     # Regular paragraph
-                    markdown_lines.append(text.strip())
+                    markdown_lines.append(formatted_text.strip())
                 
                 markdown_lines.append("")  # Add spacing
             
@@ -506,6 +639,48 @@ class PDFToMarkdownConverter:
                 image_index += 1
         
         return "\n".join(markdown_lines)
+    
+    def _extract_block_text_with_links(self, block: Dict[str, Any]) -> str:
+        """Extract text from a block while preserving link formatting and grouping consecutive linked spans."""
+        formatted_text = ""
+        
+        for line in block["lines"]:
+            spans = line["spans"]
+            i = 0
+            
+            while i < len(spans):
+                current_span = spans[i]
+                current_link = current_span.get("link")
+                
+                if current_link and current_link.get("url"):
+                    # Found a linked span - collect all consecutive spans with the same URL
+                    linked_text = ""
+                    current_url = current_link["url"]
+                    
+                    # Collect consecutive spans with the same link URL
+                    while (i < len(spans) and 
+                           spans[i].get("link") and 
+                           spans[i]["link"].get("url") == current_url):
+                        linked_text += spans[i]["text"]
+                        i += 1
+                    
+                    # Format the entire grouped text as a single link
+                    clean_text = linked_text.strip()
+                    if clean_text:
+                        if current_link["type"] == "external":
+                            formatted_text += f"[{clean_text}]({current_url})"
+                        elif current_link["type"] == "internal":
+                            formatted_text += f"[{clean_text}]({current_url})"
+                        else:
+                            formatted_text += clean_text
+                    else:
+                        formatted_text += linked_text  # Preserve whitespace if no clean text
+                else:
+                    # Non-linked span - add as is
+                    formatted_text += current_span["text"]
+                    i += 1
+        
+        return formatted_text
     
     def convert(self, output_name: Optional[str] = None) -> Path:
         """Convert PDF to Markdown with MCP client enhancement."""
@@ -558,6 +733,14 @@ class PDFToMarkdownConverter:
             
         finally:
             self.close_pdf()
+    
+    def _extract_block_text(self, block: Dict[str, Any]) -> str:
+        """Extract plain text from a text block."""
+        text = ""
+        for line in block["lines"]:
+            for span in line["spans"]:
+                text += span["text"]
+        return text
 
 
 def main():
@@ -587,6 +770,11 @@ def main():
         "--llm-api-key",
         help="LLM API key for authentication"
     )
+    parser.add_argument(
+        "--no-mcp-interactive",
+        action="store_true",
+        help="Enable MCP interactive mode"
+    )
     
     args = parser.parse_args()
     
@@ -602,7 +790,8 @@ def main():
             output_dir=args.output,
             extract_images=not args.no_images,
             llm_api_url=args.llm_api_url,
-            llm_api_key=args.llm_api_key
+            llm_api_key=args.llm_api_key,
+            mcp_interactive=not args.no_mcp_interactive
         )
         
         # Convert
